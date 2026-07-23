@@ -2,7 +2,7 @@
 
 Control a Mitsubishi Heavy Industries (MHI) air conditioner over your local network using an **M5StickC (ESP32)** as an infrared bridge.
 
-The M5Stick runs MicroPython firmware that exposes a mini HTTP server: it accepts raw IR byte payloads, encodes them into the MHI infrared protocol, and transmits them. It can also **decode** incoming MHI signals (useful for reverse-engineering your remote).
+The M5Stick runs MicroPython firmware that exposes a mini HTTP server: it accepts raw IR byte payloads, encodes them into the MHI infrared protocol, and transmits them. It also serves standalone power on/off/toggle endpoints that work without the host server, and it can **decode** incoming MHI signals (useful for reverse-engineering your remote).
 
 A companion FastAPI server runs on your host machine, builds the MHI payloads from friendly parameters (mode, temperature, fan speed, airflow), and forwards them to the bridge.
 
@@ -15,11 +15,11 @@ A companion FastAPI server runs on your host machine, builds the MHI payloads fr
 
 ## Repository layout
 
-| Path              | Description                                                         |
-|-------------------|---------------------------------------------------------------------|
-| `server.py`       | Host-side FastAPI server. Builds MHI payloads and calls the bridge. |
-| `m5stick/boot.py` | Device boot script: PMIC power-on and long-press power-off.         |
-| `m5stick/main.py` | Device firmware: WiFi, IR transmit/receive, battery, HTTP server.   |
+| Path              | Description                                                                    |
+|-------------------|--------------------------------------------------------------------------------|
+| `server.py`       | Host-side FastAPI server. Builds MHI payloads and calls the bridge.            |
+| `m5stick/boot.py` | Device boot script: PMIC power-on and long-press power-off.                    |
+| `m5stick/main.py` | Device firmware: WiFi, IR transmit/receive, battery, power state, HTTP server. |
 
 ## Hardware
 
@@ -68,10 +68,17 @@ Default GPIO wiring (edit the constants at the top of `m5stick/main.py` to match
 
 ## Bridge HTTP API (on the M5Stick)
 
-| Method | Endpoint     | Body                   | Description                                    |
-|--------|--------------|------------------------|------------------------------------------------|
-| `POST` | `/transmit`  | JSON list of byte ints | Encodes and transmits the raw MHI payload.     |
-| `GET`  | `/battery`   | —                      | Returns `{"voltage": ..., "percentage": ...}`. |
+| Method | Endpoint    | Body                   | Description                                                       |
+|--------|-------------|------------------------|-------------------------------------------------------------------|
+| `POST` | `/transmit` | JSON list of byte ints | Encodes and transmits the raw MHI payload.                        |
+| `GET`  | `/battery`  | —                      | Returns `{"voltage": ..., "percentage": ...}`.                    |
+| `GET`  | `/on`       | —                      | Sends the built-in power-on command. Returns `{"state": "on"}`.   |
+| `GET`  | `/off`      | —                      | Sends the built-in power-off command. Returns `{"state": "off"}`. |
+| `GET`  | `/toggle`   | —                      | Flips the power state and returns the new one.                    |
+
+`/on`, `/off` and `/toggle` transmit the hardcoded `COMMAND_ON` / `COMMAND_OFF` payloads defined at the top of `m5stick/main.py`, so basic power control keeps working even when the host server is down. They share their power state with the front button, so pressing the button and calling `/toggle` stay in sync.
+
+> **Note:** the bridge *assumes* the power state rather than measuring it. If the A/C is switched with its original remote, the bridge's idea of the state goes stale and the next `/toggle` will be off by one. Call `/on` or `/off` to resynchronise.
 
 ## Host server
 

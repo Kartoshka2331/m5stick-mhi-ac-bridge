@@ -185,9 +185,10 @@ class InfraredService:
 
 
 class HttpServer:
-    def __init__(self, ir_service, battery_service):
+    def __init__(self, ir_service, battery_service, power_controller):
         self.ir_service = ir_service
         self.battery_service = battery_service
+        self.power_controller = power_controller
 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -207,14 +208,8 @@ class HttpServer:
         try:
             connection.settimeout(0.5)
             request = connection.recv(4096).decode()
-            body = "Endpoints: POST /transmit (JSON list), GET /battery"
-            content_type = "text/plain"
-
-            if "POST /transmit" in request:
-                body = self._handle_transmit(request)
-            elif "GET /battery" in request:
-                body = json.dumps(self.battery_service.get_status())
-                content_type = "application/json"
+            method, path = self._parse_request_line(request)
+            body, content_type = self._route(method, path, request)
 
             connection.send(self._build_response(body, content_type).encode())
         except OSError:
@@ -223,6 +218,28 @@ class HttpServer:
             print(f"Web error: {error}")
         finally:
             connection.close()
+
+    @staticmethod
+    def _parse_request_line(request):
+        segments = request.split("\r\n")[0].split(" ")
+        if len(segments) < 2:
+            return "", ""
+
+        return segments[0], segments[1].split("?")[0]
+
+    def _route(self, method, path, request):
+        if method == "POST" and path == "/transmit":
+            return self._handle_transmit(request), "text/plain"
+        if method == "GET" and path == "/battery":
+            return json.dumps(self.battery_service.get_status()), "application/json"
+        if method == "GET" and path == "/on":
+            return json.dumps({"state": self.power_controller.turn_on()}), "application/json"
+        if method == "GET" and path == "/off":
+            return json.dumps({"state": self.power_controller.turn_off()}), "application/json"
+        if method == "GET" and path == "/toggle":
+            return json.dumps({"state": self.power_controller.toggle()}), "application/json"
+
+        return "Endpoints: POST /transmit (JSON list), GET /battery, GET /on, GET /off, GET /toggle", "text/plain"
 
     def _handle_transmit(self, request):
         parts = request.split("\r\n\r\n")
@@ -256,15 +273,39 @@ class NetworkManager:
         print(f"Connected successfully. IP address: {ip_address}")
 
 
+class PowerController:
+    def __init__(self, ir_service):
+        self.ir_service = ir_service
+        self.is_on = False
+
+    @property
+    def state_name(self):
+        return "on" if self.is_on else "off"
+
+    def turn_on(self):
+        return self._apply(True)
+
+    def turn_off(self):
+        return self._apply(False)
+
+    def toggle(self):
+        return self._apply(not self.is_on)
+
+    def _apply(self, should_be_on):
+        self.is_on = should_be_on
+        self.ir_service.transmit_signal(COMMAND_ON if should_be_on else COMMAND_OFF)
+        return self.state_name
+
+
 def main():
     NetworkManager()
 
     ir_service = InfraredService()
     battery_service = BatteryMonitor()
     button = Button()
-    web_server = HttpServer(ir_service, battery_service)
+    power_controller = PowerController(ir_service)
+    web_server = HttpServer(ir_service, battery_service, power_controller)
 
-    is_on = False
     print("SYSTEM: Ready")
 
     while True:
@@ -272,10 +313,8 @@ def main():
         web_server.handle_client()
 
         if button.is_pressed():
-            is_on = not is_on
-            command = COMMAND_ON if is_on else COMMAND_OFF
-            print(f"MANUAL TRIGGER: Sending {'ON' if is_on else 'OFF'}")
-            ir_service.transmit_signal(command)
+            state_name = power_controller.toggle()
+            print(f"MANUAL TRIGGER: Sent {state_name.upper()}")
 
 
 if __name__ == "__main__":
